@@ -1,75 +1,86 @@
-import cv2
-import numpy as np
-from skimage.metrics import structural_similarity as ssim
+"""Extract video frames for Stable Diffusion / EbSynth using SSIM."""
+
 import os
+
+import cv2
+from skimage.metrics import structural_similarity as ssim
 from tqdm import tqdm
 
-# Constants
-INPUT_VIDEO = 'path/to/input/video'
-FRAME_RATE = 1  # Specify your desired frame rate
-THRESHOLD = 0.25  # Set the threshold for keyframe identification
+# Edit these settings before running the script.
+INPUT_VIDEO = 'path/to/input/video.mp4'
+FRAME_RATE = 1  # Maximum number of frames per second to compare (1 = once per second)
+THRESHOLD = 0.90  # Keep a frame when SSIM against the last keyframe falls below this
 OUTPUT_PATH = 'path/to/output/folder'
 
-# Function to calculate the difference between two frames
-def calculate_difference(frame1, frame2):
-    return ssim(frame1, frame2, multichannel=True)
+# Compare smaller copies for speed; save selected frames at their original resolution.
+COMPARISON_WIDTH = 320
 
-try:
-    # Video Input and frame count
-    cap = cv2.VideoCapture(INPUT_VIDEO)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    num_digits = len(str(total_frames))
-    cap.release()
 
-    # Frame Extraction, Comparison, and Difference Accumulation
-    frame_diffs = []
-    prev_frame = None
-    frame_count = 0
+def comparison_frame(frame):
+    """Create a small colour image for SSIM without modifying the export frame."""
+    height, width = frame.shape[:2]
+    if width > COMPARISON_WIDTH:
+        new_height = max(1, round(height * COMPARISON_WIDTH / width))
+        frame = cv2.resize(frame, (COMPARISON_WIDTH, new_height), interpolation=cv2.INTER_AREA)
+    if min(frame.shape[:2]) < 7:
+        raise ValueError('Video dimensions are too small for SSIM (minimum 7 pixels).')
+    return frame
 
-    cap = cv2.VideoCapture(INPUT_VIDEO)
-    with tqdm(total=total_frames, desc="Processing frames") as pbar:
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
 
-            frame_count += 1
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+def extract_keyframes(input_video, output_path, frame_rate=FRAME_RATE, threshold=THRESHOLD):
+    """Save the first frame and frames sufficiently different from the last saved one."""
+    if frame_rate <= 0:
+        raise ValueError('FRAME_RATE must be greater than zero.')
+    if not -1 <= threshold <= 1:
+        raise ValueError('THRESHOLD must be between -1 and 1 (SSIM similarity).')
 
-            if prev_frame is not None:
-                diff = calculate_difference(gray_frame, prev_frame)
-                frame_diffs.append(diff)
+    cap = cv2.VideoCapture(input_video)
+    if not cap.isOpened():
+        raise ValueError(f'Could not open video: {input_video}')
 
-            prev_frame = gray_frame
-            pbar.update(1)
+    try:
+        source_fps = cap.get(cv2.CAP_PROP_FPS)
+        if not 0 < source_fps < float('inf'):
+            raise ValueError('Could not read the source video frame rate.')
 
-            if frame_count % FRAME_RATE == 0:
-                cv2.waitKey(1000)
-    cap.release()
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        digits = len(str(max(0, total_frames - 1))) if total_frames > 0 else 6
+        interval = max(1.0, source_fps / frame_rate)
+        next_sample = 0.0
+        saved_count = 0
+        previous_keyframe = None
 
-    # Difference Accumulation
-    accumulated_diffs = np.cumsum(frame_diffs)
+        synth_frames_path = os.path.join(output_path, 'synth_frames')
+        os.makedirs(synth_frames_path, exist_ok=True)
 
-    # Keyframe Identification
-    keyframes = [i for i, diff in enumerate(frame_diffs) if diff < THRESHOLD]
+        with tqdm(total=total_frames if total_frames > 0 else None,
+                  desc='Processing frames') as progress:
+            frame_index = 0
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                progress.update(1)
 
-    # Save Keyframes in the "synth_frames" folder
-    synth_frames_path = os.path.join(OUTPUT_PATH, 'synth_frames')
-    os.makedirs(synth_frames_path, exist_ok=True)
+                if frame_index + 1e-9 >= next_sample:
+                    next_sample += interval
+                    candidate = comparison_frame(frame)
+                    if (previous_keyframe is None or
+                            ssim(previous_keyframe, candidate,
+                                 channel_axis=2, data_range=255) < threshold):
+                        filename = f'{frame_index:0{digits}d}.png'
+                        filepath = os.path.join(synth_frames_path, filename)
+                        if not cv2.imwrite(filepath, frame):
+                            raise OSError(f'Could not save frame: {filepath}')
+                        previous_keyframe = candidate
+                        saved_count += 1
+                frame_index += 1
 
-    cap = cv2.VideoCapture(INPUT_VIDEO)
-    with tqdm(total=len(keyframes), desc="Saving keyframes") as pbar:
-        for frame_idx in keyframes:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-            ret, frame = cap.read()
+        print(f'Saved {saved_count} keyframes to {synth_frames_path}')
+        return saved_count
+    finally:
+        cap.release()
 
-            if ret:
-                filename = f"{frame_idx:0{num_digits}d}.png"
-                cv2.imwrite(os.path.join(synth_frames_path, filename), frame)
 
-            pbar.update(1)
-    cap.release()
-
-except Exception as e:
-    print(f"An error occurred: {e}")
-    
+if __name__ == '__main__':
+    extract_keyframes(INPUT_VIDEO, OUTPUT_PATH)
