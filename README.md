@@ -1,30 +1,12 @@
 # Video Keyframe Detection and Extraction
 
-This Python script analyzes an input video and identifies keyframes based on structural similarity index (SSIM) differences between consecutive frames. The identified keyframes are saved in a separate folder named "synth_frames" for further processing with tools like stable diffusion and ebsynth.
+A small Python script that selects video frames for Stable Diffusion / EbSynth workflows using the Structural Similarity Index (SSIM). It saves the original-resolution frames in `synth_frames`.
 
-## Features
-
-- Frame extraction from input video
-- Frame comparison using structural similarity index (SSIM)
-- Keyframe identification based on a predefined threshold
-- Saving keyframes with dynamic leading zeros based on total number of frames in the input video
-- Progress bars for processing frames and saving keyframes
-
-## Dependencies
-
-- Python 3.x
-- OpenCV
-- scikit-image
-- numpy
-- tqdm
+The **first frame is always saved**. Each later sampled frame is compared with the **last saved keyframe**, not merely the preceding video frame. This catches gradual changes that accumulate over time without requiring a sudden scene cut.
 
 ## Installation
 
-1. Install Python 3.x if not already installed.
-
-2. Clone this repository or download the script.
-
-3. Install the required Python libraries:
+Requires Python 3:
 
 ```bash
 pip install opencv-python-headless scikit-image numpy tqdm
@@ -32,20 +14,36 @@ pip install opencv-python-headless scikit-image numpy tqdm
 
 ## Usage
 
-Edit the INPUT_VIDEO and OUTPUT_PATH constants in the script to specify the input video file and the output directory for saving keyframes.
+Edit the settings at the top of `ssim_keyframe_extraction.py`:
 
-(Optional) Adjust the FRAME_RATE and THRESHOLD constants to change the frame rate for processing and the threshold for keyframe identification.
-
-Run the script:
-
-```bash
-python video_keyframe_detection.py
+```python
+INPUT_VIDEO = 'path/to/input/video.mp4'
+FRAME_RATE = 1
+THRESHOLD = 0.90
+OUTPUT_PATH = 'path/to/output/folder'
 ```
 
-The identified keyframes will be saved in the "synth_frames" folder inside the specified output directory.
+- `INPUT_VIDEO`: source video path.
+- `OUTPUT_PATH`: parent directory for the `synth_frames` folder.
+- `FRAME_RATE`: approximate number of video frames **per second to analyse**, not a playback delay. Default: one per second. Values at or above the source FPS analyse every frame.
+- `THRESHOLD`: SSIM similarity cutoff from `-1` to `1`. Save a sampled frame when its similarity to the last saved keyframe is **below** this value. A higher threshold generally saves **more** frames. The default `0.90` is a starting point.
 
-## Notes
+Run:
 
-The script is designed to work with various video lengths and adjusts the leading zeros for saved keyframes dynamically based on the total number of frames in the input video.
-This script provides a basic outline for the desired functionality. You will need to set up and integrate stable diffusion and ebsynth tools for further processing of the keyframes
+```bash
+python ssim_keyframe_extraction.py
+```
 
+Frames are saved as PNGs at original resolution. Filenames contain the zero-based source video frame number, padded for sorting. Comparisons use downscaled colour frames for speed.
+
+**Before rerunning:** start with an empty output directory (or clear the old `synth_frames` PNGs). This script deliberately does not delete older outputs automatically.
+
+The script selects frames only. Stable Diffusion and EbSynth remain separate tools.
+
+## Tests
+
+With `pytest` installed, run:
+
+```bash
+python -m pytest -q
+```
